@@ -40,6 +40,7 @@ import type { PDF, Note, ChatMessage } from '../types/index';
 import NoteDialog from './NoteDialog';
 import OwlChatRoom from './OwlChatRoom';
 import { ragFlowApi } from '../services/ragflowApi';
+import { RAGFLOW_API } from '../utils/env';
 
 // 動態導入 React-Quill
 const ReactQuill = lazy(() => import('react-quill'));
@@ -273,6 +274,9 @@ export default function ChatInterface() {
   const [snackbarOpen, setSnackbarOpen] = useState(false);
   const [noteToDelete, setNoteToDelete] = useState<string | null>(null);
   const [deleteNoteConfirmOpen, setDeleteNoteConfirmOpen] = useState(false);
+  const [sessionId, setSessionId] = useState<string>('');
+  const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [streamAnswer, setStreamAnswer] = useState<string>('');
 
   const handleDeleteDocument = (id: string) => {
     setDocumentToDelete(id);
@@ -407,57 +411,203 @@ export default function ChatInterface() {
     }
   };
 
-  const handleSendMessage = () => {
+  const handleSendMessage = async () => {
     if (inputText.trim()) {
+      // 顯示用戶訊息
       const newMessage: ChatMessage = {
         id: uuidv4(),
         sender: 'user',
         text: inputText,
         timestamp: new Date(),
       };
-      setMessages([...messages, newMessage]);
+      setMessages(prevMessages => [...prevMessages, newMessage]);
       setInputText('');
-
-      // 根據使用者輸入生成相關回應
-      setTimeout(() => {
-        const userInput = inputText.toLowerCase();
-        let systemResponse: ChatMessage;
-
-        if (userInput.includes('深度學習') || userInput.includes('deep learning')) {
-          const suggestion = {
-            id: uuidv4(),
-            title: '深度學習筆記',
-            content: `基於您的問題「${inputText}」，以下是重要的深度學習概念：\n1. 神經網絡架構\n2. 參數優化\n3. 模型評估`,
-            timestamp: new Date(),
-            tags: ['深度學習', '神經網絡', '機器學習']
-          } as Note;
-
-          systemResponse = {
-            id: uuidv4(),
-            sender: 'system',
-            text: `關於您提到的${inputText}，我有以下見解：\n\n深度學習是機器學習的一個重要分支，它通過多層神經網絡來模擬人腦的學習過程。根據您的問題，我建議關注以下幾個要點：`,
-            timestamp: new Date(),
-            suggestions: [suggestion]
-          };
-        } else {
-          const suggestion = {
-            id: uuidv4(),
-            title: '學習筆記',
-            content: `根據您的問題「${inputText}」整理的要點：\n1. 主要概念\n2. 應用場景\n3. 注意事項`,
-            timestamp: new Date(),
-            tags: ['學習筆記']
-          } as Note;
-
-          systemResponse = {
-            id: uuidv4(),
-            sender: 'system',
-            text: `我已經分析了您的問題「${inputText}」，以下是我的建議：`,
-            timestamp: new Date(),
-            suggestions: [suggestion]
-          };
+      setIsLoading(true);
+      
+      try {
+        // 如果沒有 sessionId，建立新會話
+        let currentSessionId = sessionId;
+        if (!currentSessionId) {
+          console.log('創建新 RagFlow Agent 會話');
+          setSnackbarMessage('連接至 RagFlow Agent...');
+          setSnackbarOpen(true);
+          
+          // 生成一個唯一的用戶ID
+          const userId = uuidv4();
+          console.log('使用用戶ID:', userId);
+          
+          const createSessionResponse = await fetch(
+            `${RAGFLOW_API.DOMAIN}/api/v1/agents/${RAGFLOW_API.AGENT_ID}/sessions?user_id=${userId}`,
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${RAGFLOW_API.KEY}`
+              },
+              body: JSON.stringify({
+                // 可以在此處添加 Begin 組件中指定的其他參數
+              })
+            }
+          );
+          
+          const sessionData = await createSessionResponse.json();
+          if (sessionData.code === 0 && sessionData.data && sessionData.data.id) {
+            currentSessionId = sessionData.data.id;
+            setSessionId(currentSessionId);
+            console.log('創建 RagFlow 會話成功:', currentSessionId);
+            
+            // 添加初始助手訊息 (如果有)
+            if (sessionData.data.message && sessionData.data.message.length > 0) {
+              const welcomeMessage: ChatMessage = {
+                id: uuidv4(),
+                sender: 'system',
+                text: sessionData.data.message[0].content,
+                timestamp: new Date(),
+              };
+              setMessages(prevMessages => [...prevMessages, welcomeMessage]);
+            }
+          } else {
+            console.error('建立 RagFlow 會話失敗:', sessionData);
+            setSnackbarMessage('連接 RagFlow Agent 失敗');
+            setSnackbarOpen(true);
+            setIsLoading(false);
+            return;
+          }
         }
-        setMessages(prev => [...prev, systemResponse]);
-      }, 1000);
+        
+        // 發送用戶訊息到 RagFlow Agent
+        console.log('發送訊息到 RagFlow Agent:', inputText);
+        
+        // 建立一個臨時的 ID 來標識這個回應
+        const tempResponseId = uuidv4();
+        
+        // 在開始串流回應前，先添加一個空的系統訊息
+        const initialSystemMessage: ChatMessage = {
+          id: tempResponseId,
+          sender: 'system',
+          text: '',
+          timestamp: new Date(),
+        };
+        setMessages(prevMessages => [...prevMessages, initialSystemMessage]);
+        setStreamAnswer('');
+        
+        // 使用 fetch API 以串流方式獲取回應
+        const response = await fetch(
+          `${RAGFLOW_API.DOMAIN}/api/v1/agents/${RAGFLOW_API.AGENT_ID}/completions`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${RAGFLOW_API.KEY}`
+            },
+            body: JSON.stringify({
+              question: inputText,
+              stream: true,
+              session_id: currentSessionId,
+              sync_dsl: true
+            })
+          }
+        );
+        
+        // 處理串流回應
+        const reader = response.body?.getReader();
+        if (!reader) {
+          throw new Error('無法獲取回應串流');
+        }
+        
+        // 讀取串流回應
+        let combinedAnswer = '';
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          
+          // 將 Uint8Array 轉換為字串
+          const chunk = decoder.decode(value);
+          buffer += chunk;
+          
+          // 處理完整的 SSE 消息
+          let pos;
+          while ((pos = buffer.indexOf('\n\n')) >= 0) {
+            const message = buffer.substring(0, pos);
+            buffer = buffer.substring(pos + 2);
+            
+            // 處理 SSE 消息，每個消息可能包含多行，每行以 'data:' 開頭
+            const dataLines = message.split('\n').filter(line => line.startsWith('data:'));
+            for (const dataLine of dataLines) {
+              const jsonStr = dataLine.substring(5).trim();
+              if (!jsonStr) continue;
+              
+              try {
+                const jsonData = JSON.parse(jsonStr);
+                console.log('解析的數據:', jsonData);
+                
+                // 檢查是否為最終的空訊息
+                if (jsonData.code === 0 && jsonData.data === true) {
+                  console.log('接收到完成標記');
+                  continue;
+                }
+                
+                // 檢查是否包含回答
+                if (jsonData.code === 0 && jsonData.data && jsonData.data.answer !== undefined) {
+                  // 更新串流回答
+                  combinedAnswer = jsonData.data.answer;
+                  setStreamAnswer(combinedAnswer);
+                  
+                  // 同時更新界面上的訊息
+                  setMessages(prevMessages => 
+                    prevMessages.map(msg => 
+                      msg.id === tempResponseId 
+                        ? { ...msg, text: combinedAnswer } 
+                        : msg
+                    )
+                  );
+                  
+                  // 如果有參考資料，可以在這裡處理
+                  if (jsonData.data.reference) {
+                    console.log('參考資料:', jsonData.data.reference);
+                    // 這裡可以處理參考資料的顯示邏輯
+                  }
+                }
+              } catch (error) {
+                console.error('解析回應時發生錯誤:', error, jsonStr);
+              }
+            }
+          }
+        }
+        
+        console.log('完整回應:', combinedAnswer);
+        
+        // 完成後更新最終系統訊息
+        setMessages(prevMessages => 
+          prevMessages.map(msg => 
+            msg.id === tempResponseId 
+              ? { 
+                  ...msg, 
+                  text: combinedAnswer || '抱歉，我無法處理您的請求。',
+                  timestamp: new Date()
+                } 
+              : msg
+          )
+        );
+        
+      } catch (error) {
+        console.error('與 RagFlow Agent 通訊時發生錯誤:', error);
+        setSnackbarMessage('與 RagFlow Agent 通訊失敗');
+        setSnackbarOpen(true);
+        
+        // 添加錯誤訊息
+        const errorMessage: ChatMessage = {
+          id: uuidv4(),
+          sender: 'system',
+          text: '抱歉，與知識助手的連接發生問題，請稍後再試。',
+          timestamp: new Date(),
+        };
+        setMessages(prevMessages => [...prevMessages, errorMessage]);
+      } finally {
+        setIsLoading(false);
+      }
     }
   };
 
@@ -739,6 +889,11 @@ export default function ChatInterface() {
               </Box>
             </MessageContainer>
           ))}
+          {isLoading && (
+            <Box sx={{ display: 'flex', justifyContent: 'center', my: 2 }}>
+              <Typography variant="body2" sx={{ color: '#666' }}>正在思考回應中...</Typography>
+            </Box>
+          )}
         </ChatContent>
 
         {/* 中間面板輸入區域 */}
@@ -749,7 +904,8 @@ export default function ChatInterface() {
             rows={3}
             value={inputText}
             onChange={(e) => setInputText(e.target.value)}
-            placeholder="開始輸入..."
+            placeholder="有任何問題都可以問我..."
+            disabled={isLoading}
             onKeyDown={(e) => {
               // 按下 Enter 且沒有按下 Shift 鍵時發送消息
               if (e.key === 'Enter' && !e.shiftKey) {
@@ -775,6 +931,7 @@ export default function ChatInterface() {
             <IconButton
               size="small"
               onClick={handleSendMessage}
+              disabled={isLoading || !inputText.trim()}
               sx={{ color: '#1976d2' }}
             >
               <SendIcon />
