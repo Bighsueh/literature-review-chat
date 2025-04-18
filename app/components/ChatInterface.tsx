@@ -39,6 +39,7 @@ import { v4 as uuidv4 } from 'uuid';
 import type { PDF, Note, ChatMessage } from '../types/index';
 import NoteDialog from './NoteDialog';
 import OwlChatRoom from './OwlChatRoom';
+import { ragFlowApi } from '../services/ragflowApi';
 
 // 動態導入 React-Quill
 const ReactQuill = lazy(() => import('react-quill'));
@@ -154,14 +155,14 @@ const OwlContainer = styled(Box)({
   zIndex: 1000,
 });
 
-const OwlDoctor = styled(Box)(({ isHovered }: { isHovered: boolean }) => ({
+const OwlDoctor = styled(Box)(({ ishovered }: { ishovered: boolean }) => ({
   width: '240px',
   height: '240px',
   backgroundImage: 'url("/貓頭鷹博士_擺手.gif")',
   backgroundSize: 'contain',
   backgroundRepeat: 'no-repeat',
   cursor: 'pointer',
-  animation: `${isHovered ? wave : float} 2s ease-in-out infinite`,
+  animation: `${ishovered ? wave : float} 2s ease-in-out infinite`,
   transition: 'transform 0.3s ease-in-out',
   '&:hover': {
     transform: 'scale(1.1)',
@@ -289,20 +290,18 @@ export default function ChatInterface() {
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
     if (files) {
-      // 創建 FormData 用於後端上傳（如果有後端的話）
+      // 創建 FormData 用於後端上傳
       const formData = new FormData();
       Array.from(files).forEach(file => {
         formData.append('files', file);
       });
 
       try {
-        // 這裡可以替換為實際的API調用
-        // const response = await fetch('/api/upload', {
-        //   method: 'POST',
-        //   body: formData,
-        // });
+        // 顯示上傳中提示
+        setSnackbarMessage('正在上傳文件...');
+        setSnackbarOpen(true);
 
-        // 模擬上傳成功，直接新增到前端列表
+        // 處理前端本地顯示
         const newDocuments: PDF[] = Array.from(files).map(file => {
           // 獲取文件擴展名
           const fileExtension = file.name.split('.').pop()?.toLowerCase() || '';
@@ -315,13 +314,29 @@ export default function ChatInterface() {
         });
         
         setDocuments([...documents, ...newDocuments]);
+
+        // 同時上傳到 RagFlow API
+        // 使用 Promise.all 並行處理所有文件的上傳
+        const uploadPromises = Array.from(files).map(async (file) => {
+          try {
+            const response = await ragFlowApi.uploadDocument(file);
+            console.log(`文件 ${file.name} 成功上傳到 RagFlow:`, response);
+            return response;
+          } catch (error) {
+            console.error(`文件 ${file.name} 上傳到 RagFlow 失敗:`, error);
+            throw error;
+          }
+        });
+
+        // 等待所有上傳完成
+        await Promise.all(uploadPromises);
         
         // 顯示上傳成功的提示
-        setSnackbarMessage('文件上傳成功');
+        setSnackbarMessage('文件上傳成功，已同步至知識庫');
         setSnackbarOpen(true);
       } catch (error) {
         console.error('上傳錯誤:', error);
-        setSnackbarMessage('文件上傳失敗');
+        setSnackbarMessage('文件上傳失敗，請檢查網絡連接或API配置');
         setSnackbarOpen(true);
       }
     }
@@ -773,7 +788,7 @@ export default function ChatInterface() {
           }}
         >
           <OwlDoctor
-            isHovered={isOwlHovered}
+            ishovered={isOwlHovered}
             onMouseEnter={() => setIsOwlHovered(true)}
             onMouseLeave={() => setIsOwlHovered(false)}
             onClick={() => setShowOwlChat(true)}
