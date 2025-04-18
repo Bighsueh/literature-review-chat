@@ -23,6 +23,7 @@ import {
   Alert,
   Badge,
   CircularProgress,
+  Fade,
 } from '@mui/material';
 import { styled, keyframes } from '@mui/material/styles';
 import SendIcon from '@mui/icons-material/Send';
@@ -327,6 +328,59 @@ const systemMessages: ChatMessage[] = [];
 // 移除預設貓頭鷹訊息
 const owlMessages: ChatMessage[] = [];
 
+// 添加毛玻璃背景遮罩
+const TutorialOverlay = styled(Box)({
+  position: 'fixed',
+  top: 0,
+  left: 0,
+  right: 0,
+  bottom: 0,
+  backgroundColor: 'rgba(0, 0, 0, 0.3)',
+  backdropFilter: 'blur(4px)',
+  zIndex: 1400,
+});
+
+// 修改氣泡樣式 - 將藍色改為白灰色
+const TutorialBubble = styled(Paper)(({ theme }) => ({
+  position: 'absolute',
+  padding: '20px',
+  borderRadius: '12px',
+  backgroundColor: 'rgba(245, 245, 245, 0.95)',  // 改為白灰色
+  color: '#333333',  // 文字顏色改為暗灰色
+  boxShadow: '0 4px 20px rgba(0,0,0,0.2)',
+  zIndex: 1500,
+  minWidth: '350px',
+  maxWidth: '450px',
+  pointerEvents: 'auto',
+  '&:after': {
+    content: '""',
+    position: 'absolute',
+    width: '20px',
+    height: '20px',
+    backgroundColor: 'rgba(245, 245, 245, 0.95)',  // 箭頭顏色也要改
+    transform: 'rotate(45deg)',
+  }
+}));
+
+// 修改高亮區域，使其保持清晰
+const HighlightArea = styled(Box)({
+  position: 'absolute',
+  zIndex: 1450,
+  borderRadius: '4px',
+  backdropFilter: 'none',
+  backgroundColor: 'transparent',
+  border: '2px solid rgba(255, 255, 255, 0.8)',
+  boxShadow: '0 0 10px rgba(255, 255, 255, 0.5)',
+});
+
+// 修改按鈕容器樣式 - 適應白灰色背景
+const TutorialButtons = styled(Box)({
+  display: 'flex',
+  justifyContent: 'flex-end',
+  marginTop: '16px',
+  gap: '12px',
+});
+
 export default function ChatInterface() {
   const [documents, setDocuments] = useState<PDF[]>([]);
   const [notes, setNotes] = useState<Note[]>([]);
@@ -351,6 +405,13 @@ export default function ChatInterface() {
   const [streamAnswer, setStreamAnswer] = useState<string>('');
   const [isInitializing, setIsInitializing] = useState<boolean>(true);
   const [initError, setInitError] = useState<string | null>(null);
+  const [showTutorial, setShowTutorial] = useState(true);
+  const [tutorialStep, setTutorialStep] = useState(1);
+  const [tutorialSkipped, setTutorialSkipped] = useState(false);
+
+  // 添加引用來獲取元素位置
+  const fileButtonRef = useRef<HTMLDivElement>(null);
+  const inputAreaRef = useRef<HTMLDivElement>(null);
 
   const handleDeleteDocument = (id: string) => {
     setDocumentToDelete(id);
@@ -674,35 +735,160 @@ export default function ChatInterface() {
   };
 
   const handleSendOwlMessage = (text: string) => {
-    const newMessage: ChatMessage = {
-      id: uuidv4(),
-      sender: 'user',
-      text,
-      timestamp: new Date(),
-    };
-    setOwlChatMessages([...owlChatMessages, newMessage]);
-
-    // 模擬貓頭鷹博士回應
-    setTimeout(() => {
+    // 如果消息來自用戶（而不是歡迎消息或系統自動添加的消息）
+    const isUserMessage = !owlChatMessages.some(msg => msg.text === text && msg.sender === 'owl');
+    
+    if (isUserMessage) {
+      // 添加用戶消息
+      const newMessage: ChatMessage = {
+        id: uuidv4(),
+        sender: 'user',
+        text,
+        timestamp: new Date(),
+      };
+      setOwlChatMessages(prevMessages => [...prevMessages, newMessage]);
+    } else {
+      // 添加貓頭鷹博士的回覆
       const owlResponse: ChatMessage = {
         id: uuidv4(),
         sender: 'owl',
-        text: '很好的問題！讓我幫您找找相關的資料...',
+        text,
         timestamp: new Date(),
-        isRead: false,
+        isRead: !showOwlChat, // 如果聊天窗口未顯示，標記為未讀
       };
-      setOwlChatMessages(prev => [...prev, owlResponse]);
-      setUnreadCount(prev => prev + 1);
-    }, 1000);
+      setOwlChatMessages(prevMessages => [...prevMessages, owlResponse]);
+      
+      // 如果聊天窗口未顯示，增加未讀消息計數
+      if (!showOwlChat) {
+        setUnreadCount(prev => prev + 1);
+      }
+    }
   };
 
-  const handleAddToNotes = (suggestion: any) => {
+  const handleAddToNotes = async (suggestion: any) => {
     try {
+      setSnackbarMessage('正在從AI生成筆記標題...');
+      setSnackbarOpen(true);
+      
+      // 獲取筆記內容
+      const noteContent = suggestion.content || '';
+      
+      // 預設標題（以防 API 調用失敗）
+      let noteTitle = suggestion.title || '未命名筆記';
+      
+      // 修改 API 調用部分，添加更詳細的日誌輸出
+      try {
+        // 準備要發送的數據
+        const apiInput = {
+          "messages": [
+            `System: 請根據內文生成一個簡短，10字以內的title\nHuman: ${noteContent}\nHuman: \nYou must format your output as a JSON value that adheres to a given \"JSON Schema\" instance.\n\n\"JSON Schema\" is a declarative language that allows you to annotate and validate JSON documents.\n\nFor example, the example \"JSON Schema\" instance {{\"properties\": {{\"foo\": {{\"description\": \"a list of test words\", \"type\": \"array\", \"items\": {{\"type\": \"string\"}}}}}}, \"required\": [\"foo\"]}}}}\nwould match an object with one required property, \"foo\". The \"type\" property specifies \"foo\" must be an \"array\", and the \"description\" property semantically describes it as \"a list of test words\". The items within \"foo\" must be strings.\nThus, the object {{\"foo\": [\"bar\", \"baz\"]}} is a well-formatted instance of this example \"JSON Schema\". The object {{\"properties\": {{\"foo\": [\"bar\", \"baz\"]}}}} is not well-formatted.\n\nYour output will be parsed and type-checked according to the provided schema instance, so make sure all fields in your output match the schema exactly and there are no trailing commas!\n\nHere is the JSON Schema instance your output must adhere to. Include the enclosing markdown codeblock:\n\`\`\`json\n{\"type\":\"object\",\"properties\":{\"output\":{\"type\":\"object\",\"properties\":{\"response\":{\"type\":\"string\"}},\"additionalProperties\":false}},\"additionalProperties\":false,\"$schema\":\"http://json-schema.org/draft-07/schema#\"}\n\`\`\`\n`
+          ],
+          "estimatedTokens": 338,
+          "options": {
+            "lc": 1,
+            "type": "not_implemented",
+            "id": [
+              "langchain",
+              "chat_models",
+              "ollama",
+              "ChatOllama"
+            ]
+          }
+        };
+
+        // 打印 API 輸入
+        console.log('======= API Input =======');
+        console.log('筆記內容:', noteContent);
+        console.log('完整 API 請求數據:', apiInput);
+        console.log('========================');
+
+        const response = await fetch('https://n8n.hsueh.tw/webhook/00141c75-3da3-49a7-8e07-dab74f117dcb/chat', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(apiInput)
+        });
+        
+        if (response.ok) {
+          const data = await response.json();
+          
+          // 打印 API 輸出
+          console.log('======= API Output =======');
+          console.log('API 響應狀態:', response.status);
+          console.log('原始 API 響應:', data);
+          console.log('響應類型:', typeof data);
+          console.log('==========================');
+          
+          // 從 API 回應中提取標題
+          if (data && typeof data === 'object') {
+            // 檢查是否是直接返回的 JSON 對象
+            if (data.output && data.output.response) {
+              noteTitle = data.output.response;
+              console.log('從 API 獲取的標題 (output.response):', noteTitle);
+            } 
+            // 檢查是否是字符串形式的 JSON
+            else if (typeof data === 'string') {
+              try {
+                const parsedData = JSON.parse(data);
+                console.log('解析後的字符串數據:', parsedData);
+                if (parsedData.output && parsedData.output.response) {
+                  noteTitle = parsedData.output.response;
+                  console.log('從 API 字符串解析獲取的標題:', noteTitle);
+                }
+              } catch (parseError) {
+                console.error('解析 API 回應字符串失敗:', parseError);
+              }
+            }
+            // 檢查是否是 data.response 格式
+            else if (data.response) {
+              const responseStr = data.response;
+              console.log('response 字段內容:', responseStr);
+              console.log('response 字段類型:', typeof responseStr);
+              
+              // 嘗試解析 response 字段
+              try {
+                // 檢查 response 是否為 JSON 字符串
+                if (typeof responseStr === 'string' && responseStr.includes('{"output":{"response":')) {
+                  console.log('response 包含 output.response 格式');
+                  const match = responseStr.match(/"response":"([^"]+)"/);
+                  if (match && match[1]) {
+                    noteTitle = match[1];
+                    console.log('從字符串正則匹配獲取的標題:', noteTitle);
+                  }
+                } else if (typeof responseStr === 'object' && responseStr.output && responseStr.output.response) {
+                  noteTitle = responseStr.output.response;
+                  console.log('從 response 對象獲取的標題:', noteTitle);
+                }
+              } catch (parseError) {
+                console.error('解析 response 字段失敗:', parseError);
+              }
+            } else {
+              console.warn('API 回應格式不符預期:', data);
+            }
+          } else {
+            console.warn('API 回應不是對象:', data);
+          }
+          
+          // 最終獲取到的標題
+          console.log('========= 最終標題 =========');
+          console.log('最終使用的筆記標題:', noteTitle);
+          console.log('============================');
+        } else {
+          console.error('API 回應錯誤狀態碼:', response.status);
+          const errorText = await response.text();
+          console.error('API 錯誤詳情:', errorText);
+        }
+      } catch (error) {
+        console.error('生成筆記標題時發生錯誤:', error);
+        // 使用默認標題繼續處理
+      }
+      
       // 確保建立新筆記時有正確的數據結構
       const newNote: Note = {
         id: uuidv4(),
-        title: suggestion.title || '未命名筆記',
-        content: suggestion.content || '',
+        title: noteTitle,
+        content: noteContent,
         timestamp: new Date(),
         tags: suggestion.tags || []
       };
@@ -711,8 +897,8 @@ export default function ChatInterface() {
       const updatedNotes = [...notes, newNote];
       setNotes(updatedNotes);
       
-      // 顯示成功訊息
-      setSnackbarMessage('筆記已新增到右側區域');
+      // 在成功創建筆記後顯示標題
+      setSnackbarMessage(`筆記「${noteTitle}」已新增到右側區域`);
       setSnackbarOpen(true);
       
       console.log('已添加新筆記:', newNote);
@@ -899,12 +1085,45 @@ export default function ChatInterface() {
     return <iconInfo.icon sx={{ mr: 2, color: iconInfo.color }} />;
   };
 
+  // 新手教學功能處理函數
+  const handleNextTutorial = () => {
+    if (tutorialStep < 2) {
+      setTutorialStep(tutorialStep + 1);
+    } else {
+      setShowTutorial(false);
+    }
+  };
+  
+  const handleSkipTutorial = () => {
+    setShowTutorial(false);
+    setTutorialSkipped(true);
+  };
+  
+  // 在組件加載時檢查是否已經完成過教學
+  useEffect(() => {
+    const tutorialCompleted = localStorage.getItem('tutorialCompleted');
+    if (tutorialCompleted === 'true') {
+      setShowTutorial(false);
+      setTutorialSkipped(true);
+    }
+  }, []);
+  
+  // 在教學完成後保存狀態
+  useEffect(() => {
+    if (!showTutorial && (tutorialStep > 2 || tutorialSkipped)) {
+      localStorage.setItem('tutorialCompleted', 'true');
+    }
+  }, [showTutorial, tutorialStep, tutorialSkipped]);
+
   return (
     <AppContainer>
+      {/* 新手教學毛玻璃遮罩 */}
+      {showTutorial && <TutorialOverlay />}
+      
       {/* 左側面板 - 知識來源 */}
       <SourcePanel>
         <Box>
-          <Box sx={{ display: 'flex', gap: 1 }}>
+          <Box sx={{ display: 'flex', gap: 1, position: 'relative' }} ref={fileButtonRef}>
             <input
               type="file"
               ref={fileInputRef}
@@ -917,9 +1136,79 @@ export default function ChatInterface() {
               startIcon={<AddIcon />} 
               fullWidth
               onClick={() => fileInputRef.current?.click()}
+              sx={showTutorial && tutorialStep === 1 ? { 
+                position: 'relative',
+                zIndex: 1500,
+                boxShadow: '0 0 15px rgba(255, 255, 255, 0.7)' 
+              } : {}}
             >
               新增知識檔案
             </ActionButton>
+            
+            {/* 教學步驟 1: 檔案上傳提示 - 修改高亮區域 */}
+            {showTutorial && tutorialStep === 1 && fileButtonRef.current && (
+              <>
+                <Box 
+                  sx={{
+                    position: 'absolute',
+                    top: fileButtonRef.current.offsetTop,
+                    left: fileButtonRef.current.offsetLeft,
+                    width: fileButtonRef.current.offsetWidth,
+                    height: fileButtonRef.current.offsetHeight,
+                    borderRadius: '4px',
+                    zIndex: 1460,
+                    backgroundColor: 'transparent',
+                  }}
+                />
+                <HighlightArea
+                  sx={{
+                    top: fileButtonRef.current.offsetTop - 4,
+                    left: fileButtonRef.current.offsetLeft - 4,
+                    width: fileButtonRef.current.offsetWidth + 8,
+                    height: fileButtonRef.current.offsetHeight + 8,
+                  }}
+                />
+              </>
+            )}
+            
+            {/* 教學步驟 1: 檔案上傳提示 */}
+            <Fade in={showTutorial && tutorialStep === 1}>
+              <TutorialBubble sx={{
+                position: 'absolute',
+                top: '100%',
+                left: '15px',  // 改為左對齊而非居中
+                transform: 'none',  // 移除 translateX(-50%)
+                marginTop: '16px',
+                maxWidth: '320px',  // 稍微縮小寬度避免溢出
+                '&:after': {
+                  top: '-10px',
+                  left: '30px',  // 調整箭頭位置
+                  marginLeft: '0',  // 移除 margin-left
+                }
+              }}>
+                <Typography variant="body1" sx={{ fontSize: '16px', color: '#333333' }}>
+                  第一步，您可以先在這裡新增論文的檔案
+                </Typography>
+                <TutorialButtons>
+                  <Button 
+                    size="small" 
+                    variant="outlined" 
+                    sx={{ color: '#666', borderColor: '#ccc' }}  // 調整按鈕顏色
+                    onClick={handleSkipTutorial}
+                  >
+                    跳過教學
+                  </Button>
+                  <Button 
+                    size="small" 
+                    variant="contained" 
+                    color="error"
+                    onClick={handleNextTutorial}
+                  >
+                    下一步
+                  </Button>
+                </TutorialButtons>
+              </TutorialBubble>
+            </Fade>
           </Box>
           <Typography variant="subtitle2" sx={{ color: '#666', mt: 2 }}>
             已上傳的文件
@@ -1033,12 +1322,8 @@ export default function ChatInterface() {
                         <IconButton
                           size="small"
                           onClick={() => {
-                            const noteTitle = message.text.length > 30 
-                              ? message.text.substring(0, 30) + '...' 
-                              : message.text;
-                              
                             const noteData = {
-                              title: noteTitle,
+                              title: '', // 現在不再需要這裡指定標題，將由 API 生成
                               content: message.text,
                               tags: []
                             };
@@ -1093,7 +1378,12 @@ export default function ChatInterface() {
                       }}
                       onClick={() => {
                         console.log('卡片被點擊，準備添加筆記:', suggestion);
-                        handleAddToNotes(suggestion);
+                        // 確保我們傳遞完整的內容，但不需要手動設置標題
+                        const noteData = {
+                          content: suggestion.content,
+                          tags: suggestion.tags || []
+                        };
+                        handleAddToNotes(noteData);
                       }}
                     >
                       <Box sx={{ flex: 1, mr: 1 }}>
@@ -1119,7 +1409,12 @@ export default function ChatInterface() {
                           size="small"
                           onClick={(e) => {
                             e.stopPropagation();
-                            handleAddToNotes(suggestion);
+                            // 確保我們傳遞完整的內容，但不需要手動設置標題
+                            const noteData = {
+                              content: suggestion.content,
+                              tags: suggestion.tags || []
+                            };
+                            handleAddToNotes(noteData);
                           }}
                           sx={{ 
                             backgroundColor: '#e3f2fd',
@@ -1145,7 +1440,7 @@ export default function ChatInterface() {
         </ChatContent>
 
         {/* 中間面板輸入區域 */}
-        <Box sx={{ position: 'relative' }}>
+        <Box sx={{ position: 'relative' }} ref={inputAreaRef}>
           <TextField
             fullWidth
             multiline
@@ -1167,8 +1462,78 @@ export default function ChatInterface() {
               '& .MuiOutlinedInput-root': {
                 '& fieldset': { borderColor: '#e0e0e0' },
               },
+              ...(showTutorial && tutorialStep === 2 ? { 
+                position: 'relative',
+                zIndex: 1500,
+                boxShadow: '0 0 15px rgba(255, 255, 255, 0.7)' 
+              } : {})
             }}
           />
+          
+          {/* 教學步驟 2: 發問提示 - 修改高亮區域 */}
+          {showTutorial && tutorialStep === 2 && inputAreaRef.current && (
+            <>
+              <Box 
+                sx={{
+                  position: 'absolute',
+                  top: inputAreaRef.current.offsetTop,
+                  left: inputAreaRef.current.offsetLeft,
+                  width: inputAreaRef.current.offsetWidth,
+                  height: inputAreaRef.current.offsetHeight,
+                  borderRadius: '8px',
+                  zIndex: 1460,
+                  backgroundColor: 'transparent',
+                }}
+              />
+              <HighlightArea
+                sx={{
+                  top: inputAreaRef.current.offsetTop - 4,
+                  left: inputAreaRef.current.offsetLeft - 4,
+                  width: inputAreaRef.current.offsetWidth + 8,
+                  height: inputAreaRef.current.offsetHeight + 8,
+                  borderRadius: '8px',
+                }}
+              />
+            </>
+          )}
+          
+          {/* 教學步驟 2: 發問提示 */}
+          <Fade in={showTutorial && tutorialStep === 2}>
+            <TutorialBubble sx={{
+              bottom: '100%',
+              left: '50%',
+              transform: 'translateX(-50%)',
+              marginBottom: '16px',
+              '&:after': {
+                bottom: '-10px',
+                left: '50%',
+                marginLeft: '-10px',
+              }
+            }}>
+              <Typography variant="body1" sx={{ fontSize: '16px', color: '#333333' }}>
+                第二步，您可以在這邊開始針對你想要了解的「名詞」發問
+              </Typography>
+              <TutorialButtons>
+                <Button 
+                  size="small" 
+                  variant="outlined" 
+                  sx={{ color: '#666', borderColor: '#ccc' }}  // 調整按鈕顏色
+                  onClick={handleSkipTutorial}
+                >
+                  跳過教學
+                </Button>
+                <Button 
+                  size="small" 
+                  variant="contained" 
+                  color="error"
+                  onClick={handleNextTutorial}
+                >
+                  完成
+                </Button>
+              </TutorialButtons>
+            </TutorialBubble>
+          </Fade>
+          
           <Box sx={{
             position: 'absolute',
             right: '24px',
