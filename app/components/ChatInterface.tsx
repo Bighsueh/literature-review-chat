@@ -22,6 +22,7 @@ import {
   Snackbar,
   Alert,
   Badge,
+  CircularProgress,
 } from '@mui/material';
 import { styled, keyframes } from '@mui/material/styles';
 import SendIcon from '@mui/icons-material/Send';
@@ -40,7 +41,7 @@ import type { PDF, Note, ChatMessage } from '../types/index';
 import NoteDialog from './NoteDialog';
 import OwlChatRoom from './OwlChatRoom';
 import { ragFlowApi } from '../services/ragflowApi';
-import { RAGFLOW_API } from '../utils/env';
+import { RAGFLOW_API, isRagFlowConfigured } from '../utils/env';
 
 // 動態導入 React-Quill
 const ReactQuill = lazy(() => import('react-quill'));
@@ -144,6 +145,77 @@ const MessageContainer = styled(Box)({
   padding: '16px',
   marginBottom: '16px',
   boxShadow: '0 2px 4px rgba(0,0,0,0.05)',
+});
+
+// 新增聊天泡泡樣式
+const UserMessageBubble = styled(Box)({
+  backgroundColor: '#e3f2fd',
+  borderRadius: '18px 18px 0 18px',
+  padding: '12px 16px',
+  marginLeft: 'auto',
+  maxWidth: '80%',
+  boxShadow: '0 1px 2px rgba(0,0,0,0.1)',
+  position: 'relative',
+  '&:after': {
+    content: '""',
+    position: 'absolute',
+    bottom: 0,
+    right: '-8px',
+    width: '16px',
+    height: '16px',
+    backgroundColor: '#e3f2fd',
+    clipPath: 'polygon(0 0, 100% 0, 100% 100%)',
+  }
+});
+
+const SystemMessageBubble = styled(Box)({
+  backgroundColor: '#f5f5f5',
+  borderRadius: '18px 18px 18px 0',
+  padding: '12px 16px',
+  marginRight: 'auto',
+  maxWidth: '80%',
+  boxShadow: '0 1px 2px rgba(0,0,0,0.1)',
+  position: 'relative',
+  '&:after': {
+    content: '""',
+    position: 'absolute',
+    bottom: 0,
+    left: '-8px',
+    width: '16px',
+    height: '16px',
+    backgroundColor: '#f5f5f5',
+    clipPath: 'polygon(0 0, 0 100%, 100% 0)',
+  }
+});
+
+const MessageContent = styled(Box)({
+  display: 'flex',
+  flexDirection: 'column',
+});
+
+const MessageHeader = styled(Box)({
+  display: 'flex',
+  justifyContent: 'space-between',
+  alignItems: 'flex-start',
+  marginBottom: '4px',
+});
+
+const MessageText = styled(Typography)({
+  whiteSpace: 'pre-line',
+  marginRight: '8px',
+});
+
+const SystemMessageActions = styled(Box)({
+  display: 'flex',
+  justifyContent: 'flex-end',
+  marginTop: '8px',
+});
+
+const MessageTime = styled(Typography)({
+  fontSize: '0.75rem',
+  color: '#666',
+  marginTop: '4px',
+  textAlign: 'right',
 });
 
 const OwlContainer = styled(Box)({
@@ -277,6 +349,8 @@ export default function ChatInterface() {
   const [sessionId, setSessionId] = useState<string>('');
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [streamAnswer, setStreamAnswer] = useState<string>('');
+  const [isInitializing, setIsInitializing] = useState<boolean>(true);
+  const [initError, setInitError] = useState<string | null>(null);
 
   const handleDeleteDocument = (id: string) => {
     setDocumentToDelete(id);
@@ -425,56 +499,11 @@ export default function ChatInterface() {
       setIsLoading(true);
       
       try {
-        // 如果沒有 sessionId，建立新會話
-        let currentSessionId = sessionId;
-        if (!currentSessionId) {
-          console.log('創建新 RagFlow Agent 會話');
-          setSnackbarMessage('連接至 RagFlow Agent...');
-          setSnackbarOpen(true);
-          
-          // 生成一個唯一的用戶ID
-          const userId = uuidv4();
-          console.log('使用用戶ID:', userId);
-          
-          const createSessionResponse = await fetch(
-            `${RAGFLOW_API.DOMAIN}/api/v1/agents/${RAGFLOW_API.AGENT_ID}/sessions?user_id=${userId}`,
-            {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${RAGFLOW_API.KEY}`
-              },
-              body: JSON.stringify({
-                // 可以在此處添加 Begin 組件中指定的其他參數
-              })
-            }
-          );
-          
-          const sessionData = await createSessionResponse.json();
-          if (sessionData.code === 0 && sessionData.data && sessionData.data.id) {
-            currentSessionId = sessionData.data.id;
-            setSessionId(currentSessionId);
-            console.log('創建 RagFlow 會話成功:', currentSessionId);
-            
-            // 添加初始助手訊息 (如果有)
-            if (sessionData.data.message && sessionData.data.message.length > 0) {
-              const welcomeMessage: ChatMessage = {
-                id: uuidv4(),
-                sender: 'system',
-                text: sessionData.data.message[0].content,
-                timestamp: new Date(),
-              };
-              setMessages(prevMessages => [...prevMessages, welcomeMessage]);
-            }
-          } else {
-            console.error('建立 RagFlow 會話失敗:', sessionData);
-            setSnackbarMessage('連接 RagFlow Agent 失敗');
-            setSnackbarOpen(true);
-            setIsLoading(false);
-            return;
-          }
+        // 確保有有效的 sessionId
+        if (!sessionId) {
+          throw new Error('尚未與對話助手建立連接，請刷新頁面重試');
         }
-        
+
         // 發送用戶訊息到 RagFlow Agent
         console.log('發送訊息到 RagFlow Agent:', inputText);
         
@@ -503,7 +532,7 @@ export default function ChatInterface() {
             body: JSON.stringify({
               question: inputText,
               stream: true,
-              session_id: currentSessionId,
+              session_id: sessionId,
               sync_dsl: true
             })
           }
@@ -519,78 +548,111 @@ export default function ChatInterface() {
         let combinedAnswer = '';
         const decoder = new TextDecoder();
         let buffer = '';
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          
-          // 將 Uint8Array 轉換為字串
-          const chunk = decoder.decode(value);
-          buffer += chunk;
-          
-          // 處理完整的 SSE 消息
-          let pos;
-          while ((pos = buffer.indexOf('\n\n')) >= 0) {
-            const message = buffer.substring(0, pos);
-            buffer = buffer.substring(pos + 2);
+        let hasReceivedValidAnswer = false;
+        
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
             
-            // 處理 SSE 消息，每個消息可能包含多行，每行以 'data:' 開頭
-            const dataLines = message.split('\n').filter(line => line.startsWith('data:'));
-            for (const dataLine of dataLines) {
-              const jsonStr = dataLine.substring(5).trim();
-              if (!jsonStr) continue;
+            // 將 Uint8Array 轉換為字串
+            const chunk = decoder.decode(value);
+            buffer += chunk;
+            
+            // 處理完整的 SSE 消息
+            let pos;
+            while ((pos = buffer.indexOf('\n\n')) >= 0) {
+              const message = buffer.substring(0, pos);
+              buffer = buffer.substring(pos + 2);
               
-              try {
-                const jsonData = JSON.parse(jsonStr);
-                console.log('解析的數據:', jsonData);
+              // 處理 SSE 消息，每個消息可能包含多行，每行以 'data:' 開頭
+              const dataLines = message.split('\n').filter(line => line.startsWith('data:'));
+              for (const dataLine of dataLines) {
+                const jsonStr = dataLine.substring(5).trim();
+                if (!jsonStr) continue;
                 
-                // 檢查是否為最終的空訊息
-                if (jsonData.code === 0 && jsonData.data === true) {
-                  console.log('接收到完成標記');
-                  continue;
-                }
-                
-                // 檢查是否包含回答
-                if (jsonData.code === 0 && jsonData.data && jsonData.data.answer !== undefined) {
-                  // 更新串流回答
-                  combinedAnswer = jsonData.data.answer;
-                  setStreamAnswer(combinedAnswer);
+                try {
+                  const jsonData = JSON.parse(jsonStr);
+                  console.log('解析的數據:', jsonData);
                   
-                  // 同時更新界面上的訊息
-                  setMessages(prevMessages => 
-                    prevMessages.map(msg => 
-                      msg.id === tempResponseId 
-                        ? { ...msg, text: combinedAnswer } 
-                        : msg
-                    )
-                  );
-                  
-                  // 如果有參考資料，可以在這裡處理
-                  if (jsonData.data.reference) {
-                    console.log('參考資料:', jsonData.data.reference);
-                    // 這裡可以處理參考資料的顯示邏輯
+                  // 檢查是否為最終的空訊息
+                  if (jsonData.code === 0 && jsonData.data === true) {
+                    console.log('接收到完成標記');
+                    continue;
                   }
+                  
+                  // 檢查是否包含回答
+                  if (jsonData.code === 0 && jsonData.data && jsonData.data.answer !== undefined) {
+                    // 檢查回答是否為空白
+                    if (jsonData.data.answer.trim() !== '') {
+                      // 更新串流回答
+                      combinedAnswer = jsonData.data.answer;
+                      setStreamAnswer(combinedAnswer);
+                      hasReceivedValidAnswer = true;
+                      
+                      // 同時更新界面上的訊息
+                      setMessages(prevMessages => 
+                        prevMessages.map(msg => 
+                          msg.id === tempResponseId 
+                            ? { ...msg, text: combinedAnswer } 
+                            : msg
+                        )
+                      );
+                    }
+                    
+                    // 如果有參考資料，可以在這裡處理
+                    if (jsonData.data.reference) {
+                      console.log('參考資料:', jsonData.data.reference);
+                      // 這裡可以處理參考資料的顯示邏輯
+                    }
+                  }
+                } catch (error) {
+                  // 忽略解析錯誤，這可能是連接失敗訊息
+                  console.log('解析回應時發生錯誤，可能是連接結束訊息，忽略:', error);
                 }
-              } catch (error) {
-                console.error('解析回應時發生錯誤:', error, jsonStr);
               }
             }
+          }
+        } catch (error) {
+          // 忽略最後可能出現的連接失敗錯誤
+          console.log('讀取流時出現錯誤，可能是正常連接結束:', error);
+          
+          // 如果之前已經收到有效回應，就不將此視為錯誤
+          if (!hasReceivedValidAnswer) {
+            throw error; // 如果沒有收到任何有效回應，則拋出錯誤
           }
         }
         
         console.log('完整回應:', combinedAnswer);
         
         // 完成後更新最終系統訊息
-        setMessages(prevMessages => 
-          prevMessages.map(msg => 
-            msg.id === tempResponseId 
-              ? { 
-                  ...msg, 
-                  text: combinedAnswer || '抱歉，我無法處理您的請求。',
-                  timestamp: new Date()
-                } 
-              : msg
-          )
-        );
+        if (combinedAnswer.trim() === '') {
+          // 如果沒有收到任何有效回應，則顯示錯誤訊息
+          setMessages(prevMessages => 
+            prevMessages.map(msg => 
+              msg.id === tempResponseId 
+                ? { 
+                    ...msg, 
+                    text: '抱歉，我無法處理您的請求。',
+                    timestamp: new Date()
+                  } 
+                : msg
+            )
+          );
+        } else {
+          // 有效回應，確保最終訊息已更新
+          setMessages(prevMessages => 
+            prevMessages.map(msg => 
+              msg.id === tempResponseId 
+                ? { 
+                    ...msg, 
+                    text: combinedAnswer,
+                    timestamp: new Date()
+                  } 
+                : msg
+            )
+          );
+        }
         
       } catch (error) {
         console.error('與 RagFlow Agent 通訊時發生錯誤:', error);
@@ -721,6 +783,115 @@ export default function ChatInterface() {
     }
   }, []);
 
+  // 在組件加載時建立 RagFlow Agent session
+  useEffect(() => {
+    async function initializeRagFlowSession() {
+      if (!isRagFlowConfigured()) {
+        console.log('RagFlow API 未配置，跳過初始化');
+        setIsInitializing(false);
+        return;
+      }
+      
+      try {
+        console.log('初始化 RagFlow Agent 會話...');
+        
+        // 生成一個唯一的用戶ID
+        const userId = uuidv4();
+        console.log('使用用戶ID:', userId);
+        
+        const createSessionResponse = await fetch(
+          `${RAGFLOW_API.DOMAIN}/api/v1/agents/${RAGFLOW_API.AGENT_ID}/sessions?user_id=${userId}`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${RAGFLOW_API.KEY}`
+            },
+            body: JSON.stringify({
+              // 可以在此處添加 Begin 組件中指定的其他參數
+            })
+          }
+        );
+        
+        const sessionData = await createSessionResponse.json();
+        console.log('RagFlow 初始化響應:', sessionData);
+        
+        if (sessionData.code === 0 && sessionData.data && sessionData.data.id) {
+          const newSessionId = sessionData.data.id;
+          setSessionId(newSessionId);
+          console.log('創建 RagFlow 會話成功:', newSessionId);
+          
+          // 添加初始助手訊息 (如果有且不是空字串)
+          if (sessionData.data.message && 
+              sessionData.data.message.length > 0 && 
+              sessionData.data.message[0].content && 
+              sessionData.data.message[0].content.trim() !== '') {
+            const welcomeMessage: ChatMessage = {
+              id: uuidv4(),
+              sender: 'system',
+              text: sessionData.data.message[0].content,
+              timestamp: new Date(),
+            };
+            setMessages(prevMessages => [...prevMessages, welcomeMessage]);
+          } else {
+            // 如果沒有初始訊息或是空字串，添加一個默認歡迎訊息
+            const defaultWelcomeMessage: ChatMessage = {
+              id: uuidv4(),
+              sender: 'system',
+              text: '您好！請輸入你想要了解的名詞吧！',
+              timestamp: new Date(),
+            };
+            setMessages(prevMessages => [...prevMessages, defaultWelcomeMessage]);
+          }
+          
+          // 解決第一次發送訊息會跳錯誤的問題
+          // 在 session 建立成功後，主動發送一個空白字符到 RagFlow
+          try {
+            console.log('發送初始化請求到 RagFlow...');
+            const initResponse = await fetch(
+              `${RAGFLOW_API.DOMAIN}/api/v1/agents/${RAGFLOW_API.AGENT_ID}/completions`,
+              {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${RAGFLOW_API.KEY}`
+                },
+                body: JSON.stringify({
+                  question: " ", // 空白字符
+                  stream: false, // 不使用串流
+                  session_id: newSessionId
+                })
+              }
+            );
+            
+            const initData = await initResponse.json();
+            console.log('RagFlow 初始化請求響應:', initData);
+            // 忽略回應，不顯示在對話中
+          } catch (error) {
+            console.log('RagFlow 初始化請求失敗，但這是預期中的，繼續執行:', error);
+            // 忽略這個錯誤，因為這只是為了解決第一次發送的問題
+          }
+          
+          setInitError(null);
+        } else {
+          console.error('建立 RagFlow 會話失敗:', sessionData);
+          setInitError('無法連接到知識助手，請稍後再試');
+          setSnackbarMessage('連接 RagFlow Agent 失敗');
+          setSnackbarOpen(true);
+        }
+      } catch (error) {
+        console.error('RagFlow 初始化錯誤:', error);
+        setInitError('連接知識助手時發生錯誤，請檢查網路連接');
+        setSnackbarMessage('連接 RagFlow Agent 發生錯誤');
+        setSnackbarOpen(true);
+      } finally {
+        setIsInitializing(false);
+      }
+    }
+
+    initializeRagFlowSession();
+  }, []);
+
   // 獲取文件類型的圖標
   const getDocumentIcon = (fileName: string) => {
     const fileExtension = fileName.split('.').pop()?.toLowerCase() || '';
@@ -807,87 +978,164 @@ export default function ChatInterface() {
         </Box>
 
         <ChatContent>
+          {isInitializing && (
+            <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', my: 4, p: 2 }}>
+              <CircularProgress size={40} sx={{ mb: 2 }} />
+              <Typography variant="body1">正在連接知識助手，請稍候...</Typography>
+            </Box>
+          )}
+
+          {!isInitializing && initError && (
+            <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', my: 4, p: 2, borderRadius: 2, bgcolor: '#ffebee' }}>
+              <Typography variant="body1" color="error">{initError}</Typography>
+              <Button 
+                variant="outlined" 
+                color="primary" 
+                sx={{ mt: 2 }}
+                onClick={() => window.location.reload()}
+              >
+                重新連接
+              </Button>
+            </Box>
+          )}
+
           {messages.map((message) => (
-            <MessageContainer key={message.id}>
-              <Box sx={{ display: 'flex', alignItems: 'flex-start' }}>
-                <Box sx={{ flex: 1 }}>
-                  <Typography variant="body1" 
-                    sx={{ whiteSpace: 'pre-line' }}
-                  >
+            <Box 
+              key={message.id} 
+              sx={{ 
+                display: 'flex', 
+                flexDirection: 'column',
+                alignItems: message.sender === 'user' ? 'flex-end' : 'flex-start',
+                mb: 2,
+                px: 2
+              }}
+            >
+              {message.sender === 'user' ? (
+                <UserMessageBubble>
+                  <Typography variant="body1" sx={{ whiteSpace: 'pre-line' }}>
                     {message.text}
                   </Typography>
-                  {message.suggestions && (
-                    <Box sx={{ mt: 2 }}>
-                      <Typography variant="caption" sx={{ color: '#666', mb: 1, display: 'block' }}>
-                        點擊下方建議卡片添加到學習筆記
-                      </Typography>
-                      {message.suggestions.map((suggestion) => (
-                        <Paper
-                          key={suggestion.id}
-                          sx={{
-                            p: 1.5,
-                            mt: 1,
-                            backgroundColor: '#f5f5f5',
-                            cursor: 'pointer',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'space-between',
-                            minHeight: '60px',
-                            border: '1px solid #e0e0e0',
-                            '&:hover': {
-                              backgroundColor: '#eef6fb',
-                              boxShadow: '0 4px 8px rgba(0,0,0,0.1)',
-                              borderColor: '#bbdefb'
-                            },
-                            transition: 'all 0.2s ease',
-                          }}
+                  <MessageTime>
+                    {new Date(message.timestamp).toLocaleTimeString('zh-TW', { 
+                      hour: '2-digit', 
+                      minute: '2-digit' 
+                    })}
+                  </MessageTime>
+                </UserMessageBubble>
+              ) : (
+                <SystemMessageBubble>
+                  <MessageContent>
+                    <MessageHeader>
+                      <MessageText variant="body1">
+                        {message.text}
+                      </MessageText>
+                      <Tooltip title="加入到筆記">
+                        <IconButton
+                          size="small"
                           onClick={() => {
-                            console.log('卡片被點擊，準備添加筆記:', suggestion);
-                            handleAddToNotes(suggestion);
+                            const noteTitle = message.text.length > 30 
+                              ? message.text.substring(0, 30) + '...' 
+                              : message.text;
+                              
+                            const noteData = {
+                              title: noteTitle,
+                              content: message.text,
+                              tags: []
+                            };
+                            
+                            handleAddToNotes(noteData);
+                          }}
+                          sx={{ 
+                            padding: '4px',
+                            backgroundColor: '#e3f2fd',
+                            '&:hover': {
+                              backgroundColor: '#bbdefb'
+                            }
                           }}
                         >
-                          <Box sx={{ flex: 1, mr: 1 }}>
-                            <Typography variant="subtitle2" sx={{ fontSize: '0.9rem' }}>
-                              {suggestion.title}
-                            </Typography>
-                            <Typography 
-                              variant="body2" 
-                              color="text.secondary"
-                              sx={{ 
-                                fontSize: '0.8rem',
-                                display: '-webkit-box',
-                                WebkitLineClamp: 2,
-                                WebkitBoxOrient: 'vertical',
-                                overflow: 'hidden'
-                              }}
-                            >
-                              {suggestion.content}
-                            </Typography>
-                          </Box>
-                          <Tooltip title="加入到筆記">
-                            <IconButton
-                              size="small"
-                              onClick={(e) => {
-                                e.stopPropagation(); // 防止觸發父元素的點擊事件
-                                handleAddToNotes(suggestion);
-                              }}
-                              sx={{ 
-                                backgroundColor: '#e3f2fd',
-                                '&:hover': {
-                                  backgroundColor: '#bbdefb'
-                                }
-                              }}
-                            >
-                              <BookmarkIcon fontSize="small" />
-                            </IconButton>
-                          </Tooltip>
-                        </Paper>
-                      ))}
-                    </Box>
-                  )}
+                          <BookmarkIcon sx={{ fontSize: '1rem' }} />
+                        </IconButton>
+                      </Tooltip>
+                    </MessageHeader>
+                    <MessageTime>
+                      {new Date(message.timestamp).toLocaleTimeString('zh-TW', { 
+                        hour: '2-digit', 
+                        minute: '2-digit' 
+                      })}
+                    </MessageTime>
+                  </MessageContent>
+                </SystemMessageBubble>
+              )}
+              {message.suggestions && (
+                <Box sx={{ mt: 2, width: '100%' }}>
+                  <Typography variant="caption" sx={{ color: '#666', mb: 1, display: 'block' }}>
+                    點擊下方建議卡片添加到學習筆記
+                  </Typography>
+                  {message.suggestions.map((suggestion) => (
+                    <Paper
+                      key={suggestion.id}
+                      sx={{
+                        p: 1.5,
+                        mt: 1,
+                        backgroundColor: '#f5f5f5',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        minHeight: '60px',
+                        border: '1px solid #e0e0e0',
+                        '&:hover': {
+                          backgroundColor: '#eef6fb',
+                          boxShadow: '0 4px 8px rgba(0,0,0,0.1)',
+                          borderColor: '#bbdefb'
+                        },
+                        transition: 'all 0.2s ease',
+                      }}
+                      onClick={() => {
+                        console.log('卡片被點擊，準備添加筆記:', suggestion);
+                        handleAddToNotes(suggestion);
+                      }}
+                    >
+                      <Box sx={{ flex: 1, mr: 1 }}>
+                        <Typography variant="subtitle2" sx={{ fontSize: '0.9rem' }}>
+                          {suggestion.title}
+                        </Typography>
+                        <Typography 
+                          variant="body2" 
+                          color="text.secondary"
+                          sx={{ 
+                            fontSize: '0.8rem',
+                            display: '-webkit-box',
+                            WebkitLineClamp: 2,
+                            WebkitBoxOrient: 'vertical',
+                            overflow: 'hidden'
+                          }}
+                        >
+                          {suggestion.content}
+                        </Typography>
+                      </Box>
+                      <Tooltip title="加入到筆記">
+                        <IconButton
+                          size="small"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleAddToNotes(suggestion);
+                          }}
+                          sx={{ 
+                            backgroundColor: '#e3f2fd',
+                            '&:hover': {
+                              backgroundColor: '#bbdefb'
+                            }
+                          }}
+                        >
+                          <BookmarkIcon fontSize="small" />
+                        </IconButton>
+                      </Tooltip>
+                    </Paper>
+                  ))}
                 </Box>
-              </Box>
-            </MessageContainer>
+              )}
+            </Box>
           ))}
           {isLoading && (
             <Box sx={{ display: 'flex', justifyContent: 'center', my: 2 }}>
@@ -905,7 +1153,7 @@ export default function ChatInterface() {
             value={inputText}
             onChange={(e) => setInputText(e.target.value)}
             placeholder="有任何問題都可以問我..."
-            disabled={isLoading}
+            disabled={isLoading || isInitializing || !!initError}
             onKeyDown={(e) => {
               // 按下 Enter 且沒有按下 Shift 鍵時發送消息
               if (e.key === 'Enter' && !e.shiftKey) {
@@ -931,7 +1179,7 @@ export default function ChatInterface() {
             <IconButton
               size="small"
               onClick={handleSendMessage}
-              disabled={isLoading || !inputText.trim()}
+              disabled={isLoading || !inputText.trim() || isInitializing || !!initError}
               sx={{ color: '#1976d2' }}
             >
               <SendIcon />
