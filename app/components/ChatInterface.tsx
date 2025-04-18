@@ -155,14 +155,14 @@ const OwlContainer = styled(Box)({
   zIndex: 1000,
 });
 
-const OwlDoctor = styled(Box)(({ ishovered }: { ishovered: boolean }) => ({
+const OwlDoctor = styled(Box)(({ ishovered }: { ishovered: string }) => ({
   width: '240px',
   height: '240px',
   backgroundImage: 'url("/貓頭鷹博士_擺手.gif")',
   backgroundSize: 'contain',
   backgroundRepeat: 'no-repeat',
   cursor: 'pointer',
-  animation: `${ishovered ? wave : float} 2s ease-in-out infinite`,
+  animation: `${ishovered === 'true' ? wave : float} 2s ease-in-out infinite`,
   transition: 'transform 0.3s ease-in-out',
   '&:hover': {
     transform: 'scale(1.1)',
@@ -290,6 +290,7 @@ export default function ChatInterface() {
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
     if (files) {
+      // 不再拒絕上傳過長檔名的檔案，而是讓API自動處理
       // 創建 FormData 用於後端上傳
       const formData = new FormData();
       Array.from(files).forEach(file => {
@@ -315,28 +316,92 @@ export default function ChatInterface() {
         
         setDocuments([...documents, ...newDocuments]);
 
-        // 同時上傳到 RagFlow API
-        // 使用 Promise.all 並行處理所有文件的上傳
-        const uploadPromises = Array.from(files).map(async (file) => {
-          try {
-            const response = await ragFlowApi.uploadDocument(file);
-            console.log(`文件 ${file.name} 成功上傳到 RagFlow:`, response);
-            return response;
-          } catch (error) {
-            console.error(`文件 ${file.name} 上傳到 RagFlow 失敗:`, error);
-            throw error;
-          }
-        });
-
-        // 等待所有上傳完成
-        await Promise.all(uploadPromises);
+        // 收集成功上傳的文件ID
+        const uploadedDocumentIds: string[] = [];
         
-        // 顯示上傳成功的提示
-        setSnackbarMessage('文件上傳成功，已同步至知識庫');
-        setSnackbarOpen(true);
+        // 逐個上傳文件，確保每個文件上傳成功後單獨處理
+        for (const file of Array.from(files)) {
+          try {
+            console.log(`開始上傳文件: ${file.name}`);
+            
+            // 上傳文件
+            const uploadResponse = await ragFlowApi.uploadDocument(file);
+            console.log(`文件上傳響應:`, uploadResponse);
+            
+            // 檢查上傳是否成功 - 修正處理響應中data為陣列的情況
+            if (uploadResponse && uploadResponse.code === 0) {
+              console.log(`文件 ${file.name} 上傳成功，響應數據:`, uploadResponse);
+              
+              // 處理響應數據，支援單個對象或陣列格式
+              const dataItems = Array.isArray(uploadResponse.data) ? uploadResponse.data : [uploadResponse.data];
+              
+              // 收集每個成功上傳項目的ID
+              dataItems.forEach((item: { id?: string }) => {
+                if (item && item.id) {
+                  console.log(`文件項目ID: ${item.id}`);
+                  uploadedDocumentIds.push(item.id);
+                }
+              });
+              
+              if (dataItems.length > 0 && dataItems.some((item: { id?: string }) => item && item.id)) {
+                // 如果文件名稱被修改，記錄日誌
+                if (uploadResponse.processedFilename && uploadResponse.processedFilename.wasRenamed) {
+                  console.log(`文件名稱已自動縮短: ${uploadResponse.processedFilename.original} -> ${uploadResponse.processedFilename.processed}`);
+                }
+                
+                // 顯示文件單獨上傳成功的訊息
+                setSnackbarMessage(`文件 ${file.name} 上傳成功`);
+                setSnackbarOpen(true);
+              } else {
+                console.error(`文件 ${file.name} 上傳成功但未返回有效ID:`, uploadResponse);
+                setSnackbarMessage(`文件 ${file.name} 上傳成功但無法獲取ID`);
+                setSnackbarOpen(true);
+              }
+            } else {
+              console.error(`文件 ${file.name} 上傳失敗:`, uploadResponse);
+              setSnackbarMessage(`文件 ${file.name} 上傳失敗: ${uploadResponse.message || '未知錯誤'}`);
+              setSnackbarOpen(true);
+            }
+          } catch (error) {
+            console.error(`文件 ${file.name} 上傳時發生錯誤:`, error);
+            setSnackbarMessage(`文件 ${file.name} 上傳失敗`);
+            setSnackbarOpen(true);
+          }
+        }
+        
+        // 如果有成功上傳的文件，觸發解析
+        if (uploadedDocumentIds.length > 0) {
+          console.log(`開始解析 ${uploadedDocumentIds.length} 個文件，ID列表:`, uploadedDocumentIds);
+          
+          try {
+            setSnackbarMessage('正在解析文件內容...');
+            setSnackbarOpen(true);
+            
+            // 呼叫解析API
+            const parseResult = await ragFlowApi.parseDocuments(uploadedDocumentIds);
+            console.log('文件解析響應:', parseResult);
+            
+            if (parseResult && parseResult.code === 0) {
+              console.log('文件解析成功');
+              setSnackbarMessage('文件已成功上傳並解析完成，已同步至知識庫');
+            } else {
+              console.error('文件解析失敗:', parseResult);
+              setSnackbarMessage(`文件解析失敗: ${parseResult.message || '未知錯誤'}`);
+            }
+            setSnackbarOpen(true);
+          } catch (error) {
+            console.error('解析文件時發生錯誤:', error);
+            setSnackbarMessage('文件上傳成功，但解析失敗');
+            setSnackbarOpen(true);
+          }
+        } else {
+          console.log('沒有成功上傳的文件，跳過解析步驟');
+          setSnackbarMessage('沒有文件上傳成功，請重試');
+          setSnackbarOpen(true);
+        }
       } catch (error) {
-        console.error('上傳錯誤:', error);
-        setSnackbarMessage('文件上傳失敗，請檢查網絡連接或API配置');
+        console.error('上傳過程中發生錯誤:', error);
+        setSnackbarMessage('文件上傳過程中發生錯誤，請檢查網絡連接或API配置');
         setSnackbarOpen(true);
       }
     }
@@ -475,12 +540,35 @@ export default function ChatInterface() {
   };
 
   useEffect(() => {
-    const socket = io('http://localhost:3000');
-    socket.on('connect', () => console.log('Connected to server'));
-    socket.on('message', (message: ChatMessage) => {
-      setMessages(prev => [...prev, message]);
-    });
-    return () => { socket.disconnect(); };
+    // 檢查環境變數，只在特定環境下才啟用 Socket.IO 連接
+    const shouldConnectSocket = import.meta.env.VITE_USE_SOCKET_IO === 'true';
+    
+    if (!shouldConnectSocket) {
+      console.log('Socket.IO 連接已禁用，設置 VITE_USE_SOCKET_IO=true 環境變數來啟用');
+      return;
+    }
+      
+    try {
+      const socket = io('http://localhost:3000', { 
+        reconnectionAttempts: 3,
+        timeout: 5000,
+        autoConnect: true
+      });
+      
+      socket.on('connect', () => console.log('Connected to server'));
+      socket.on('connect_error', (error) => {
+        console.log('無法連接到 Socket.IO 服務器:', error.message);
+      });
+      socket.on('message', (message: ChatMessage) => {
+        setMessages(prev => [...prev, message]);
+      });
+      
+      return () => { 
+        socket.disconnect(); 
+      };
+    } catch (error) {
+      console.error('Socket.io 初始化錯誤:', error);
+    }
   }, []);
 
   // 獲取文件類型的圖標
@@ -566,14 +654,6 @@ export default function ChatInterface() {
       <ChatPanel>
         <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 3 }}>
           <Typography variant="h6" sx={{ color: '#333' }}>智慧對話助手</Typography>
-          <Box sx={{ display: 'flex', gap: 1 }}>
-            <IconButton size="small" sx={{ color: '#666' }}>
-              <ShareIcon />
-            </IconButton>
-            <IconButton size="small" sx={{ color: '#666' }}>
-              <SettingsIcon />
-            </IconButton>
-          </Box>
         </Box>
 
         <ChatContent>
@@ -788,7 +868,7 @@ export default function ChatInterface() {
           }}
         >
           <OwlDoctor
-            ishovered={isOwlHovered}
+            ishovered={isOwlHovered ? 'true' : 'false'}
             onMouseEnter={() => setIsOwlHovered(true)}
             onMouseLeave={() => setIsOwlHovered(false)}
             onClick={() => setShowOwlChat(true)}
