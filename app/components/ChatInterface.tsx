@@ -799,7 +799,7 @@ export default function ChatInterface() {
         // 打印 API 輸入
         console.log('======= API Input =======');
         console.log('筆記內容:', noteContent);
-        console.log('完整 API 請求數據:', apiInput);
+        console.log('完整 API 請求數據:', JSON.stringify(apiInput, null, 2));
         console.log('========================');
 
         const response = await fetch('https://n8n.hsueh.tw/webhook/00141c75-3da3-49a7-8e07-dab74f117dcb/chat', {
@@ -810,78 +810,70 @@ export default function ChatInterface() {
           body: JSON.stringify(apiInput)
         });
         
-        if (response.ok) {
-          const data = await response.json();
-          
-          // 打印 API 輸出
-          console.log('======= API Output =======');
-          console.log('API 響應狀態:', response.status);
-          console.log('原始 API 響應:', data);
-          console.log('響應類型:', typeof data);
-          console.log('==========================');
-          
-          // 從 API 回應中提取標題
-          if (data && typeof data === 'object') {
-            // 檢查是否是直接返回的 JSON 對象
-            if (data.output && data.output.response) {
-              noteTitle = data.output.response;
-              console.log('從 API 獲取的標題 (output.response):', noteTitle);
-            } 
-            // 檢查是否是字符串形式的 JSON
-            else if (typeof data === 'string') {
-              try {
-                const parsedData = JSON.parse(data);
-                console.log('解析後的字符串數據:', parsedData);
-                if (parsedData.output && parsedData.output.response) {
-                  noteTitle = parsedData.output.response;
-                  console.log('從 API 字符串解析獲取的標題:', noteTitle);
-                }
-              } catch (parseError) {
-                console.error('解析 API 回應字符串失敗:', parseError);
-              }
-            }
-            // 檢查是否是 data.response 格式
-            else if (data.response) {
-              const responseStr = data.response;
-              console.log('response 字段內容:', responseStr);
-              console.log('response 字段類型:', typeof responseStr);
-              
-              // 嘗試解析 response 字段
-              try {
-                // 檢查 response 是否為 JSON 字符串
-                if (typeof responseStr === 'string' && responseStr.includes('{"output":{"response":')) {
-                  console.log('response 包含 output.response 格式');
-                  const match = responseStr.match(/"response":"([^"]+)"/);
-                  if (match && match[1]) {
-                    noteTitle = match[1];
-                    console.log('從字符串正則匹配獲取的標題:', noteTitle);
-                  }
-                } else if (typeof responseStr === 'object' && responseStr.output && responseStr.output.response) {
-                  noteTitle = responseStr.output.response;
-                  console.log('從 response 對象獲取的標題:', noteTitle);
-                }
-              } catch (parseError) {
-                console.error('解析 response 字段失敗:', parseError);
-              }
-            } else {
-              console.warn('API 回應格式不符預期:', data);
-            }
-          } else {
-            console.warn('API 回應不是對象:', data);
-          }
-          
-          // 最終獲取到的標題
-          console.log('========= 最終標題 =========');
-          console.log('最終使用的筆記標題:', noteTitle);
-          console.log('============================');
-        } else {
-          console.error('API 回應錯誤狀態碼:', response.status);
+        // 打印響應狀態
+        console.log('======= API Response Status =======');
+        console.log('Status:', response.status);
+        console.log('Status Text:', response.statusText);
+        console.log('========================');
+
+        if (!response.ok) {
           const errorText = await response.text();
           console.error('API 錯誤詳情:', errorText);
+          throw new Error(`API 請求失敗: ${response.status} ${response.statusText}`);
         }
+
+        const data = await response.json();
+        
+        // 打印 API 輸出
+        console.log('======= API Output =======');
+        console.log('原始 API 響應:', JSON.stringify(data, null, 2));
+        console.log('響應類型:', typeof data);
+        console.log('==========================');
+        
+        // 從 API 回應中提取標題
+        if (data && typeof data === 'object') {
+          try {
+            // 檢查是否符合指定格式 {"output":{"response":"標題內容"}}
+            if (data.output && data.output.response) {
+              noteTitle = data.output.response.trim();
+              console.log('從標準格式獲取的標題:', noteTitle);
+            }
+            // 備用檢查：檢查是否有回應文本
+            else if (data.text) {
+              noteTitle = data.text.trim();
+              console.log('從 API 回應中獲取的標題:', noteTitle);
+            } else if (Array.isArray(data) && data.length > 0 && data[0].text) {
+              noteTitle = data[0].text.trim();
+              console.log('從 API 陣列回應中獲取的標題:', noteTitle);
+            } else if (data.response) {
+              noteTitle = data.response.trim();
+              console.log('從 response 字段獲取的標題:', noteTitle);
+            } else {
+              console.warn('無法從 API 回應中提取標題:', data);
+            }
+            
+            // 如果標題過長，截斷為10字
+            if (noteTitle.length > 10) {
+              const originalTitle = noteTitle;
+              noteTitle = noteTitle.substring(0, 10);
+              console.log(`標題過長，已截斷: ${originalTitle} -> ${noteTitle}`);
+            }
+          } catch (parseError) {
+            console.error('解析 API 回應失敗:', parseError);
+          }
+        } else {
+          console.warn('API 回應不是對象:', data);
+        }
+        
+        // 最終獲取到的標題
+        console.log('========= 最終標題 =========');
+        console.log('最終使用的筆記標題:', noteTitle);
+        console.log('============================');
       } catch (error) {
         console.error('生成筆記標題時發生錯誤:', error);
         // 使用默認標題繼續處理
+        setSnackbarMessage('生成標題時發生錯誤，使用預設標題');
+        setSnackbarOpen(true);
       }
       
       // 確保建立新筆記時有正確的數據結構
