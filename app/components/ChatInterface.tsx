@@ -235,7 +235,7 @@ const OwlDoctor = styled(Box)(({ ishovered }: { ishovered: string }) => ({
   backgroundImage: 'url("/貓頭鷹博士_擺手.gif")',
   backgroundSize: 'contain',
   backgroundRepeat: 'no-repeat',
-  cursor: 'pointer',
+  cursor: 'default',
   animation: `${ishovered === 'true' ? wave : float} 2s ease-in-out infinite`,
   transition: 'transform 0.3s ease-in-out',
   '&:hover': {
@@ -385,7 +385,6 @@ export default function ChatInterface() {
   const [documents, setDocuments] = useState<PDF[]>([]);
   const [notes, setNotes] = useState<Note[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [owlChatMessages, setOwlChatMessages] = useState<ChatMessage[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [showOwlChat, setShowOwlChat] = useState(false);
   const [selectedNote, setSelectedNote] = useState<Note | null>(null);
@@ -393,7 +392,7 @@ export default function ChatInterface() {
   const [inputText, setInputText] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isOwlHovered, setIsOwlHovered] = useState(false);
-  const [owlMessage, setOwlMessage] = useState('一起來創建知識吧！點擊我開始聊天！');
+  const [owlMessage, setOwlMessage] = useState('一起來創建知識吧！');
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [documentToDelete, setDocumentToDelete] = useState<string | null>(null);
   const [snackbarMessage, setSnackbarMessage] = useState('');
@@ -730,37 +729,6 @@ export default function ChatInterface() {
         setMessages(prevMessages => [...prevMessages, errorMessage]);
       } finally {
         setIsLoading(false);
-      }
-    }
-  };
-
-  const handleSendOwlMessage = (text: string) => {
-    // 如果消息來自用戶（而不是歡迎消息或系統自動添加的消息）
-    const isUserMessage = !owlChatMessages.some(msg => msg.text === text && msg.sender === 'owl');
-    
-    if (isUserMessage) {
-      // 添加用戶消息
-      const newMessage: ChatMessage = {
-        id: uuidv4(),
-        sender: 'user',
-        text,
-        timestamp: new Date(),
-      };
-      setOwlChatMessages(prevMessages => [...prevMessages, newMessage]);
-    } else {
-      // 添加貓頭鷹博士的回覆
-      const owlResponse: ChatMessage = {
-        id: uuidv4(),
-        sender: 'owl',
-        text,
-        timestamp: new Date(),
-        isRead: !showOwlChat, // 如果聊天窗口未顯示，標記為未讀
-      };
-      setOwlChatMessages(prevMessages => [...prevMessages, owlResponse]);
-      
-      // 如果聊天窗口未顯示，增加未讀消息計數
-      if (!showOwlChat) {
-        setUnreadCount(prev => prev + 1);
       }
     }
   };
@@ -1613,41 +1581,12 @@ export default function ChatInterface() {
         <OwlMessage>
           <Typography variant="body2">{owlMessage}</Typography>
         </OwlMessage>
-        <Badge 
-          badgeContent={unreadCount} 
-          color="error"
-          invisible={unreadCount === 0}
-          overlap="circular"
-          sx={{
-            '& .MuiBadge-badge': {
-              right: 30,
-              top: 30,
-              minWidth: '22px',
-              height: '22px',
-              fontSize: '0.75rem',
-              fontWeight: 'bold'
-            }
-          }}
-        >
-          <OwlDoctor
-            ishovered={isOwlHovered ? 'true' : 'false'}
-            onMouseEnter={() => setIsOwlHovered(true)}
-            onMouseLeave={() => setIsOwlHovered(false)}
-            onClick={() => setShowOwlChat(true)}
-          />
-        </Badge>
-      </OwlContainer>
-
-      {/* 貓頭鷹聊天室 */}
-      {showOwlChat && (
-        <OwlChatRoom
-          messages={owlChatMessages}
-          unreadCount={unreadCount}
-          onClose={() => setShowOwlChat(false)}
-          onSend={handleSendOwlMessage}
-          onRead={() => setUnreadCount(0)}
+        <OwlDoctor
+          ishovered={isOwlHovered ? 'true' : 'false'}
+          onMouseEnter={() => setIsOwlHovered(true)}
+          onMouseLeave={() => setIsOwlHovered(false)}
         />
-      )}
+      </OwlContainer>
 
       {/* 筆記編輯對話框 */}
       <NoteDialog
